@@ -1,0 +1,6 @@
+codex-health-backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.bak
+*.tmp
