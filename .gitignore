@@ -1,6 +1,49 @@
-codex-health-backups/
+# Private Codex data and generated state
+codex_conversations.sqlite
 *.sqlite
-*.sqlite-wal
-*.sqlite-shm
-*.bak
-*.tmp
+*.sqlite-*
+*.sqlite3
+*.db
+*.db-*
+*.jsonl
+
+# Backups created by the tool
+backups/
+codex-state-backups/
+*.raw-copy
+*.sqlite-backup
+*.before
+
+# Local Codex configuration/state snapshots
+.codex/
+.codex-global-state.json
+.codex-global-state.json.*
+config.toml
+config.toml.*
+session_index.jsonl
+state_5.sqlite
+state_5.sqlite-*
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python/cache/editor noise
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
+
+# OS files
+Thumbs.db
+.DS_Store
