@@ -964,37 +964,20 @@ def create_patched_desktop_copy() -> dict[str, object]:
     if int(after.get("unpatched_occurrences") or 0) != 0:
         raise RuntimeError("Patched desktop copy still contains modelProviders:null.")
 
-    launcher = ROOT / "RUN_PATCHED_CODEX_DESKTOP.cmd"
-    launcher.write_text(
-        "\n".join(
-            [
-                "@echo off",
-                "setlocal",
-                "chcp 437 >nul",
-                "echo This launcher will close running Codex processes, then start the patched desktop copy.",
-                "echo Close this window now if you do not want to close Codex.",
-                "pause",
-                "taskkill /IM Codex.exe /T /F >nul 2>nul",
-                "taskkill /IM codex.exe /T /F >nul 2>nul",
-                "timeout /T 2 /NOBREAK >nul",
-                'cd /d "%~dp0patched-desktop\\app"',
-                'start "" "%~dp0patched-desktop\\app\\Codex.exe"',
-                "",
-            ]
-        ),
-        encoding="ascii",
-    )
+    old_launcher = ROOT / ("RUN_PATCHED_CODEX" + "_DESKTOP.cmd")
+    if old_launcher.exists():
+        old_launcher.unlink()
     manifest = {
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "source_app": str(source_app),
         "source_asar": str(source_asar),
         "dest_app": str(dest_app),
         "dest_asar": str(dest_asar),
-        "launcher": str(launcher),
+        "launcher": "",
         "before": before,
         "after": after,
         "replacements": changed,
-        "note": "Patched desktop copy. Original WindowsApps package is untouched.",
+        "note": "Patched desktop copy. Original WindowsApps package is untouched. Launch it from RUN_SQLSwitchCodex.cmd.",
     }
     (dest_root / "patch-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -2321,7 +2304,7 @@ def show_guide() -> None:
     print("启动方式：")
     print(f"  cd /d {ROOT}")
     print("  RUN_SQLSwitchCodex.cmd")
-    print("  若 Doctor 显示 modelProviders:null 且 WindowsApps 不可写，请用管理员运行 PATCH_PROVIDER_DISPLAY.cmd。")
+    print("  若 Doctor 显示 modelProviders:null 且 WindowsApps 不可写，请用管理员运行 RUN_SQLSwitchCodex.cmd option 1。")
 
 
 def plan_projection() -> None:
@@ -3147,7 +3130,7 @@ def safe_sync_plan_en() -> None:
     print_provider_patch_status_en(inspect_provider_display_patch(), load_profile_codex_home())
 
 
-def apply_safe_sync_en() -> None:
+def apply_safe_sync_en(preconfirmed: bool = False) -> None:
     print("Apply Safe Sync")
     hr()
     plan = latest_file(PLANS_DIR, "projection-plan-*.json")
@@ -3179,10 +3162,11 @@ def apply_safe_sync_en() -> None:
         if confirm_anyway != "APPLY_ANYWAY":
             print("Cancelled.")
             return
-    confirm = input("Type APPLY_SAFE_SYNC to write the local sidebar index: ").strip()
-    if confirm != "APPLY_SAFE_SYNC":
-        print("Cancelled.")
-        return
+    if not preconfirmed:
+        confirm = input("Type APPLY_SAFE_SYNC to write the local sidebar index: ").strip()
+        if confirm != "APPLY_SAFE_SYNC":
+            print("Cancelled.")
+            return
     if not require_codex_closed_en("Safe Sync"):
         print("Cancelled.")
         return
@@ -3223,7 +3207,7 @@ def apply_provider_display_patch_en() -> None:
         write_provider_patch_audit("apply", "needs_admin", info)
         print()
         print("This app.asar is protected by WindowsApps.")
-        print("Please close Codex and run PATCH_PROVIDER_DISPLAY.cmd as Administrator.")
+        print("Please run RUN_SQLSwitchCodex.cmd as Administrator and choose option 1.")
         return
     print()
     print("This will:")
@@ -3273,7 +3257,7 @@ def undo_provider_display_patch_en() -> None:
         write_provider_patch_audit("undo", "needs_admin", info)
         print()
         print("This app.asar is protected by WindowsApps.")
-        print("Please run UNPATCH_PROVIDER_DISPLAY.cmd as Administrator.")
+        print("Please run RUN_SQLSwitchCodex.cmd as Administrator, then open Advanced menu.")
         return
     confirm = input("Type UNPATCH to undo: ").strip()
     if confirm != "UNPATCH":
@@ -3315,14 +3299,198 @@ def create_patched_desktop_copy_en() -> None:
         print(f"Create failed    : {type(exc).__name__}: {exc}")
         return
     print("Patched copy ready.")
-    print(f"Launcher         : {result.get('launcher')}")
     after = result.get("after")
     if isinstance(after, dict):
         print(f"Patched status   : {after.get('status')}")
         print(f"null markers     : {after.get('unpatched_occurrences')}")
         print(f"[] markers       : {after.get('patched_occurrences')}")
     print()
-    print("Close the official Codex Desktop, then run RUN_PATCHED_CODEX_DESKTOP.cmd.")
+    print("Use RUN_SQLSwitchCodex.cmd option 4 to launch the patched Desktop copy.")
+
+
+def patched_desktop_paths() -> tuple[Path, Path]:
+    app_dir = ROOT / "patched-desktop" / "app"
+    return app_dir, app_dir / "resources" / "app.asar"
+
+
+def patched_desktop_copy_status() -> dict[str, object]:
+    _app_dir, asar = patched_desktop_paths()
+    if not asar.exists():
+        return {"status": "missing", "app_asar": str(asar)}
+    return inspect_provider_display_patch(asar)
+
+
+def launch_patched_desktop_copy_en() -> None:
+    app_dir, asar = patched_desktop_paths()
+    exe = app_dir / "Codex.exe"
+    if not exe.exists() or not asar.exists():
+        print("Patched Desktop copy is not ready yet. Run Provider switch repair first.")
+        return
+    status = patched_desktop_copy_status()
+    if status.get("status") != "patched":
+        print("Patched Desktop copy exists but is not patched. Recreate it first.")
+        print_provider_patch_status_en(status, load_profile_codex_home())
+        return
+    if not require_codex_closed_en("Launching patched Codex Desktop"):
+        print("Cancelled.")
+        return
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    subprocess.Popen([str(exe)], cwd=str(app_dir), creationflags=creationflags)
+    print("Patched Codex Desktop launched.")
+
+
+def provider_switch_repair_en() -> None:
+    print("Provider Switch Repair")
+    hr()
+    print("Use this after changing API/provider in CC Switch or config.toml.")
+    print("Default scope: provider display patch or patched Desktop copy only.")
+    print("No auth, provider config, model, sandbox, rollout, or conversation metadata is rewritten.")
+    print()
+    if not is_windows_admin():
+        print("This repair should run from an Administrator console.")
+        print("Close this window and start RUN_SQLSwitchCodex.cmd again.")
+        return
+
+    codex_home = load_profile_codex_home()
+    report = build_doctor_report()
+    report_path = write_tool_report("doctor", report)
+    print_doctor_brief_en(report, report_path)
+    if str(report.get("overall_status")) in {"APP_ERROR", "FATAL"}:
+        print()
+        print("Doctor found an app/database-level error. Provider switch repair is not the right first step.")
+        confirm = input("Type FIX_ANYWAY to continue with display repair only: ").strip()
+        if confirm != "FIX_ANYWAY":
+            print("Cancelled.")
+            return
+
+    print()
+    official = inspect_provider_display_patch()
+    print("Official Desktop package:")
+    print_provider_patch_status_en(official, codex_home)
+    print()
+    copied = patched_desktop_copy_status()
+    print("Patched Desktop copy:")
+    print_provider_patch_status_en(copied, codex_home)
+    print()
+
+    confirm = input("Type FIX to repair provider-switch sidebar display: ").strip()
+    if confirm != "FIX":
+        print("Cancelled.")
+        return
+    if not require_codex_closed_en("Provider switch repair"):
+        print("Cancelled.")
+        return
+
+    official_fixed = official.get("status") == "patched"
+    if official.get("status") == "needs_patch":
+        app_asar = Path(str(official.get("app_asar") or ""))
+        try:
+            backup = create_app_file_backup(app_asar, "provider_display_patch")
+            print(f"Official package backup: {backup}")
+            result = apply_provider_display_patch_resilient(app_asar)
+            print("Official package patch result:")
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+            official_fixed = inspect_provider_display_patch().get("status") == "patched"
+        except Exception as exc:
+            print(f"Official package patch failed: {type(exc).__name__}: {exc}")
+            official_fixed = False
+    elif official.get("status") == "patched":
+        print("Official package is already patched.")
+    else:
+        print(f"Official package patch status is {official.get('status')}; using copied Desktop fallback if possible.")
+
+    if official_fixed:
+        print()
+        print("Provider display repair is ready in the official Desktop package.")
+        print("Open Codex normally. If the sidebar is still wrong, run option 2 Safe Sync.")
+        return
+
+    print()
+    fallback = patched_desktop_copy_status()
+    if fallback.get("status") == "patched":
+        print("Patched Desktop copy is already ready.")
+    else:
+        print("Creating or updating patched Desktop copy fallback...")
+        try:
+            result = create_patched_desktop_copy()
+        except Exception as exc:
+            print(f"Patched Desktop copy failed: {type(exc).__name__}: {exc}")
+            return
+        after = result.get("after")
+        if isinstance(after, dict):
+            print(f"Patched copy status: {after.get('status')}")
+            print(f"null markers      : {after.get('unpatched_occurrences')}")
+            print(f"[] markers        : {after.get('patched_occurrences')}")
+    print()
+    launch = input("Type LAUNCH to start the patched Desktop copy now, or press Enter to skip: ").strip()
+    if launch == "LAUNCH":
+        launch_patched_desktop_copy_en()
+    else:
+        print("Repair complete. Use option 4 later to launch the patched Desktop copy.")
+
+
+def safe_sync_repair_flow_en() -> None:
+    safe_sync_plan_en()
+    print()
+    plan = latest_file(PLANS_DIR, "projection-plan-*.json")
+    if not plan:
+        print("No Safe Sync plan was created.")
+        return
+    confirm = input("Type APPLY_SAFE_SYNC to apply the latest Safe Sync plan, or press Enter to skip: ").strip()
+    if confirm == "APPLY_SAFE_SYNC":
+        apply_safe_sync_en(preconfirmed=True)
+    else:
+        print("Skipped Safe Sync apply.")
+
+
+def simple_menu() -> int:
+    while True:
+        clear()
+        print("Codex State Health Tool - Simple Admin Menu")
+        hr()
+        print("Daily provider-switch flow:")
+        print("  Change provider/API first, close Codex, then run option 1.")
+        print()
+        print("Safe boundary:")
+        print("  Option 1 fixes Desktop display filtering or patched Desktop copy.")
+        print("  Option 2 writes only state_5.sqlite and session_index.jsonl when the local index is incomplete.")
+        print("  No option rewrites auth, provider config, model, sandbox, or rollout content by default.")
+        print(f"Tool path: {ROOT}")
+        print()
+        print("  1. Provider switch repair        [recommended after changing API/provider]")
+        print("  2. Safe Sync left-sidebar index  [only if Doctor says entries are missing]")
+        print("  3. Doctor status                 [read-only]")
+        print("  4. Launch patched Desktop copy")
+        print("  5. Advanced menu")
+        print("  0. Exit")
+        print()
+        try:
+            choice = input("Select: ").strip()
+        except EOFError:
+            return 0
+        clear()
+        try:
+            if choice == "1":
+                provider_switch_repair_en()
+            elif choice == "2":
+                safe_sync_repair_flow_en()
+            elif choice == "3":
+                verify_current_state_en()
+            elif choice == "4":
+                launch_patched_desktop_copy_en()
+            elif choice == "5":
+                english_menu()
+            elif choice == "0":
+                return 0
+            else:
+                print("Unknown option.")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+        except Exception as exc:
+            print(f"ERROR: {type(exc).__name__}: {exc}")
+        pause_en()
 
 
 def english_menu() -> int:
@@ -3434,6 +3602,17 @@ def show_help() -> None:
     print("日常只需要菜单。cmd 只负责启动；主流程在 SQLSwitchCodex.py 内完成。")
 
 
+def show_help() -> None:
+    print("Codex State Health Tool")
+    print()
+    print("Daily entry:")
+    print("  RUN_SQLSwitchCodex.cmd")
+    print("  py SQLSwitchCodex.py simple-menu")
+    print("  python SQLSwitchCodex.py simple-menu")
+    print()
+    print("After changing provider/API, run the daily entry and choose option 1.")
+
+
 def main() -> int:
     if len(sys.argv) > 1:
         if sys.argv[1] == "--internal-provider-patch":
@@ -3446,6 +3625,8 @@ def main() -> int:
             return 0
         if sys.argv[1] == "menu":
             return menu()
+        if sys.argv[1] in {"simple-menu", "simple", "admin-menu"}:
+            return simple_menu()
         if sys.argv[1] in {"english-menu", "en-menu", "en"}:
             return english_menu()
         if sys.argv[1] == "provider-patch":
@@ -3458,8 +3639,9 @@ def main() -> int:
             create_patched_desktop_copy_en()
             return 0
         return run_cli(sys.argv[1:])
-    return menu()
+    return simple_menu()
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

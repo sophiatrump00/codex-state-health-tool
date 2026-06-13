@@ -19,9 +19,6 @@ $TargetRoot = (Resolve-Path -LiteralPath $TargetRoot).Path
 $files = @(
     "SQLSwitchCodex.py",
     "RUN_SQLSwitchCodex.cmd",
-    "PATCH_PROVIDER_DISPLAY.cmd",
-    "UNPATCH_PROVIDER_DISPLAY.cmd",
-    "CREATE_PATCHED_DESKTOP_COPY.cmd",
     "README.md",
     "SQLSwitchCodex_GUIDE.md",
     "pyproject.toml"

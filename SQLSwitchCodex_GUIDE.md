@@ -14,21 +14,33 @@ RUN_SQLSwitchCodex.cmd
 Or run Python directly:
 
 ```cmd
-py SQLSwitchCodex.py english-menu
+py SQLSwitchCodex.py simple-menu
 ```
 
-The launcher looks for Python in common locations and then opens the English
-Safe Menu.
+The launcher requests Administrator permission, looks for Python in common
+locations, and then opens the Simple Admin Menu.
 
 Main menu entries:
 
-- `1. Doctor status`
-- `2. Apply Provider Display Patch`
-- `3. Undo Provider Display Patch`
-- `4. Provider Patch Status`
-- `5. Create Patched Desktop Copy`
-- `6. Safe Sync: check and create plan`
-- `7. Safe Sync: apply latest plan`
+- `1. Provider switch repair`
+- `2. Safe Sync left-sidebar index`
+- `3. Doctor status`
+- `4. Launch patched Desktop copy`
+- `5. Advanced menu`
+
+## Provider Switch Flow
+
+After changing provider/API in CC Switch or `config.toml`:
+
+1. Close Codex.
+2. Run `RUN_SQLSwitchCodex.cmd`.
+3. Choose `1. Provider switch repair`.
+4. If direct patching is blocked by `WindowsApps`, the tool creates or updates
+   a local patched Desktop copy.
+5. Use option `4` to launch the patched Desktop copy when needed.
+
+Safe Sync is not required for ordinary provider switching once the display
+patch is working.
 
 ## The Core Idea
 
@@ -90,14 +102,11 @@ Microsoft Store packages under `WindowsApps` can be non-writable even for an
 Administrator or SYSTEM task. In that case, use the copied Desktop fallback:
 
 ```cmd
-CREATE_PATCHED_DESKTOP_COPY.cmd
+RUN_SQLSwitchCodex.cmd
 ```
 
-Then launch Codex through the generated local launcher:
-
-```cmd
-RUN_PATCHED_CODEX_DESKTOP.cmd
-```
+Choose option `1` to create/update the copied Desktop fallback, then option `4`
+to launch it.
 
 The copied app lives under:
 

@@ -48,7 +48,7 @@ separate copied Desktop package. It does not edit `.codex` data.
 1. Copy `profiles/profile.example.toml` to `.local/profile.toml`.
 2. Edit `codex_home` so it points to your Codex home, usually
    `%USERPROFILE%\.codex`.
-3. Run the English launcher:
+3. Run the only daily launcher. It will request Administrator permission:
 
 ```cmd
 RUN_SQLSwitchCodex.cmd
@@ -57,33 +57,35 @@ RUN_SQLSwitchCodex.cmd
 If `py` is available, this also works:
 
 ```cmd
-py SQLSwitchCodex.py english-menu
+py SQLSwitchCodex.py simple-menu
 ```
 
-The English menu is intentionally ASCII-only to avoid mojibake in classic
+The simple menu is intentionally ASCII-only to avoid mojibake in classic
 Windows CMD and elevated Administrator consoles.
 
-Useful English menu entries:
+Simple menu entries:
 
-- `1. Doctor status`
-- `2. Apply Provider Display Patch`
-- `5. Create Patched Desktop Copy`
-- `6. Safe Sync: check and create plan`
-- `7. Safe Sync: apply latest plan`
+- `1. Provider switch repair`
+- `2. Safe Sync left-sidebar index`
+- `3. Doctor status`
+- `4. Launch patched Desktop copy`
+- `5. Advanced menu`
 
 ## Recommended Flow
 
-1. Run `Doctor status`.
-2. If provider switching hides older conversations, run
-   `Apply Provider Display Patch`.
-3. If direct patching is blocked by `WindowsApps` permissions, run
-   `Create Patched Desktop Copy`, then launch Codex through the generated
-   `RUN_PATCHED_CODEX_DESKTOP.cmd`.
-4. Use Safe Sync only when Doctor says the local database or
-   `session_index.jsonl` is missing valid rollout-backed conversations. In the
-   English menu, run option 6 first and option 7 only after reviewing the plan.
-5. Use Project/Chats UI registry repair only when conversations exist but
-   workspace grouping is wrong.
+After changing provider/API in CC Switch or `config.toml`:
+
+1. Close Codex.
+2. Run `RUN_SQLSwitchCodex.cmd`.
+3. Choose `1. Provider switch repair`.
+4. If the official `WindowsApps` package cannot be patched, the tool creates or
+   updates a local patched Desktop copy automatically.
+5. Launch the patched copy from option `4` when needed.
+
+Use `2. Safe Sync left-sidebar index` only when Doctor says the local database
+or `session_index.jsonl` is missing valid rollout-backed conversations. Safe
+Sync is not required for ordinary provider switching once the display patch is
+working.
 
 ## Why Provider Display Patch Exists
 
