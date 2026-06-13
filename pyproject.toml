@@ -1,0 +1,16 @@
+[project]
+name = "codex-state-health-tool"
+version = "0.2.4"
+description = "Safety-first Codex Desktop state doctor, sidebar sync, and provider display repair tool"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+codex-state-health = "sqlswitchcodex_v21.cli:main"
+sqlswitchcodex-v21 = "sqlswitchcodex_v21.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
