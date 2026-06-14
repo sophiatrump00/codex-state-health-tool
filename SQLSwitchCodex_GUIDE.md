@@ -17,6 +17,12 @@ Or run Python directly:
 py SQLSwitchCodex.py simple-menu
 ```
 
+For a read-only V2.5 Doctor check:
+
+```cmd
+py SQLSwitchCodex.py doctor
+```
+
 The launcher requests Administrator permission, looks for Python in common
 locations, and then opens the Simple Admin Menu.
 
@@ -135,6 +141,11 @@ Doctor reports six categories:
 
 Provider or network failures are classified separately from application-state
 failures. Provider/API errors should not automatically trigger database undo.
+
+For OpenAI-compatible third-party providers, `OPENAI_API_KEY` or `auth.json`
+may be intentionally present. Doctor reports this as a provider/auth overlap,
+not as a database failure. It can still affect resuming historical `openai`
+threads until matching OpenAI auth is restored.
 
 ## Project/Chats UI Registry Repair
 

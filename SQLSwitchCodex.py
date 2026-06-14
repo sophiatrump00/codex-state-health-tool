@@ -707,9 +707,11 @@ def print_auth_env_status_en(status: dict[str, object]) -> None:
     if status.get("auth_parse_error"):
         print(f"auth parse       : {status.get('auth_parse_error')}")
     if status.get("conflict"):
-        print("Conflict         : yes - third-party provider mode has OpenAI auth/env residue.")
+        print("Overlap          : yes - third-party provider mode is using OPENAI_API_KEY/auth.json.")
+        print("Note             : this can be intentional for OpenAI-compatible providers,")
+        print("                   but historical openai threads may fail until matching auth is restored.")
     else:
-        print("Conflict         : no")
+        print("Overlap          : no")
 
 
 def safe_sync_needed_from_report(report: dict[str, object]) -> tuple[bool, list[str]]:
@@ -2173,8 +2175,12 @@ def doctor_sandbox_runtime(report: dict[str, object], codex_home: Path) -> None:
         report,
         category,
         "PROVIDER" if auth_status.get("conflict") else "PASS",
-        "provider auth/env conflict",
-        "third-party provider mode has OpenAI auth/env residue" if auth_status.get("conflict") else "no conflict",
+        "provider auth/env overlap",
+        (
+            "third-party provider mode is using OPENAI_API_KEY/auth.json; may be intentional for custom base_url"
+            if auth_status.get("conflict")
+            else "no overlap"
+        ),
         auth_status,
     )
     ace_failures = sandbox_write_ace_failures(codex_home) if os.name == "nt" else {}
@@ -3736,6 +3742,10 @@ def show_help() -> None:
     print("  py SQLSwitchCodex.py simple-menu")
     print("  python SQLSwitchCodex.py simple-menu")
     print()
+    print("Read-only status:")
+    print("  py SQLSwitchCodex.py doctor")
+    print("  py SQLSwitchCodex.py status")
+    print()
     print("After changing provider/API, run the daily entry and choose option 1.")
 
 
@@ -3755,6 +3765,11 @@ def main() -> int:
             return simple_menu()
         if sys.argv[1] in {"english-menu", "en-menu", "en"}:
             return english_menu()
+        if sys.argv[1] in {"doctor", "status", "check"}:
+            verify_current_state_en()
+            return 0
+        if sys.argv[1] == "legacy-doctor":
+            return run_cli(["doctor", *sys.argv[2:]])
         if sys.argv[1] == "provider-patch":
             apply_provider_display_patch_en()
             return 0

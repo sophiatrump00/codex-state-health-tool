@@ -65,6 +65,12 @@ If `py` is available, this also works:
 py SQLSwitchCodex.py simple-menu
 ```
 
+For a read-only V2.5 Doctor check without opening the menu:
+
+```cmd
+py SQLSwitchCodex.py doctor
+```
+
 The simple menu is intentionally ASCII-only to avoid mojibake in classic
 Windows CMD and elevated Administrator consoles.
 
