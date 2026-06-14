@@ -1,4 +1,4 @@
-# SQLSwitchCodex V2.4 Guide
+# SQLSwitchCodex V2.5 Guide
 
 This guide is written in ASCII English so it remains readable in normal CMD,
 Administrator CMD, and PowerShell consoles with older code pages.
@@ -22,8 +22,8 @@ locations, and then opens the Simple Admin Menu.
 
 Main menu entries:
 
-- `1. Provider switch repair`
-- `2. Safe Sync left-sidebar index`
+- `1. Provider switch auto repair`
+- `2. Manual Safe Sync index rebuild`
 - `3. Doctor status`
 - `4. Launch patched Desktop copy`
 - `5. Advanced menu`
@@ -34,13 +34,15 @@ After changing provider/API in CC Switch or `config.toml`:
 
 1. Close Codex.
 2. Run `RUN_SQLSwitchCodex.cmd`.
-3. Choose `1. Provider switch repair`.
+3. Choose `1. Provider switch auto repair`.
 4. If direct patching is blocked by `WindowsApps`, the tool creates or updates
    a local patched Desktop copy.
-5. Use option `4` to launch the patched Desktop copy when needed.
+5. The tool automatically decides whether Safe Sync is needed.
+6. Use option `4` to launch the patched Desktop copy when needed.
 
 Safe Sync is not required for ordinary provider switching once the display
-patch is working.
+patch is working. V2.5 runs it only when Doctor detects missing local index
+entries, such as `missing_db > 0` or `missing_index > 0`.
 
 ## The Core Idea
 
@@ -74,6 +76,10 @@ Safe Sync does not write:
 Safe Sync imports only strict, valid, rollout-backed user threads. Partial or
 user-only assets are kept as recovery material and are not bulk-imported into
 the Codex database.
+
+Safe Sync V2.5 refuses half-populated inserts. Required thread metadata is
+filled from rollout `session_meta` / `turn_context`, same-provider templates,
+schema defaults, or the row is rejected before any database write.
 
 ## Provider Display Patch
 

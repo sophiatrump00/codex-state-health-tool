@@ -56,6 +56,9 @@ class RolloutInfo:
     source: str
     thread_source: str
     model_provider: str
+    model: str
+    reasoning_effort: str
+    cli_version: str
     sandbox_policy: str
     approval_mode: str
     ephemeral: bool
@@ -206,6 +209,9 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
     source = ""
     thread_source = ""
     model_provider = ""
+    model = ""
+    reasoning_effort = ""
+    cli_version = ""
     sandbox_policy = ""
     approval_mode = ""
     ephemeral = False
@@ -240,6 +246,9 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
                     source = str(payload.get("source") or source)
                     thread_source = str(payload.get("thread_source") or thread_source)
                     model_provider = str(payload.get("model_provider") or model_provider)
+                    model = str(payload.get("model") or model)
+                    reasoning_effort = str(payload.get("reasoning_effort") or payload.get("model_reasoning_effort") or reasoning_effort)
+                    cli_version = str(payload.get("cli_version") or cli_version)
                     ephemeral = bool(payload.get("ephemeral") or ephemeral)
                     created_ms = min([v for v in (created_ms, iso_to_ms(str(payload.get("timestamp") or ""))) if v] or [created_ms])
                     continue
@@ -250,6 +259,10 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
                             approval_mode = str(payload.get("approval_policy") or payload.get("approval_mode") or "")
                         if not sandbox_policy:
                             sandbox_policy = sandbox_policy_from_context(payload)
+                        if not model:
+                            model = str(payload.get("model") or "")
+                        if not reasoning_effort:
+                            reasoning_effort = str(payload.get("model_reasoning_effort") or payload.get("reasoning_effort") or "")
                     continue
                 role = ""
                 text = ""
@@ -272,7 +285,7 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
                     else:
                         assistant_messages += 1
     except OSError as exc:
-        return RolloutInfo(path, thread_id, False, False, f"read_error:{exc}", "", "", 0, 0, "", 0, 0, 0, "", "", "", "", "", False)
+        return RolloutInfo(path, thread_id, False, False, f"read_error:{exc}", "", "", 0, 0, "", 0, 0, 0, "", "", "", "", "", "", "", False)
 
     if parse_errors:
         reason = "json_parse_errors"
@@ -309,6 +322,9 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
         source=source,
         thread_source=thread_source,
         model_provider=model_provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        cli_version=cli_version,
         sandbox_policy=sandbox_policy,
         approval_mode=approval_mode,
         ephemeral=ephemeral,
@@ -317,6 +333,12 @@ def parse_rollout(path: Path, thread_id: str) -> RolloutInfo:
 
 def existing_or(existing: dict[str, Any] | None, key: str, fallback: Any) -> Any:
     if existing and key in existing and existing.get(key) is not None:
+        return existing.get(key)
+    return fallback
+
+
+def existing_or_nonempty(existing: dict[str, Any] | None, key: str, fallback: Any) -> Any:
+    if existing and key in existing and meaningful(existing.get(key), nonempty=True):
         return existing.get(key)
     return fallback
 
@@ -375,6 +397,29 @@ def current_config_model_provider(profile: Profile) -> str:
     return str(data.get("model_provider") or "")
 
 
+def current_config_defaults(profile: Profile) -> dict[str, Any]:
+    config = profile.codex_home / "config.toml"
+    if not config.exists():
+        return {}
+    try:
+        data = tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    defaults: dict[str, Any] = {}
+    for target, keys in {
+        "model_provider": ("model_provider",),
+        "model": ("model",),
+        "reasoning_effort": ("model_reasoning_effort", "reasoning_effort"),
+        "approval_mode": ("approval_policy", "approval_mode"),
+    }.items():
+        for key in keys:
+            value = data.get(key)
+            if value not in (None, ""):
+                defaults[target] = str(value)
+                break
+    return defaults
+
+
 def planned_model_provider(
     existing: dict[str, Any] | None,
     info: RolloutInfo,
@@ -388,6 +433,158 @@ def planned_model_provider(
     if config_model_provider:
         return config_model_provider, "current_config_fallback_missing_rollout_metadata"
     return profile.target_provider, "profile_target_fallback_missing_rollout_metadata"
+
+
+def table_column_info(conn: sqlite3.Connection, table: str) -> dict[str, dict[str, Any]]:
+    return {str(row["name"]): dict(row) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def parse_sqlite_default(raw: Any) -> Any:
+    if raw is None:
+        raise KeyError("no default")
+    text = str(raw).strip()
+    upper = text.upper()
+    if upper == "NULL":
+        return None
+    if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+        return text[1:-1].replace("''", "'")
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text[1:-1].replace('""', '"')
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
+CRITICAL_NONEMPTY_INSERT_FIELDS = {
+    "rollout_path",
+    "source",
+    "model_provider",
+    "cwd",
+    "title",
+    "sandbox_policy",
+    "approval_mode",
+}
+
+PREFERRED_NONEMPTY_METADATA_FIELDS = CRITICAL_NONEMPTY_INSERT_FIELDS | {
+    "model",
+    "reasoning_effort",
+    "cli_version",
+    "memory_mode",
+}
+
+TEMPLATE_COPY_DENYLIST = {
+    "id",
+    "rollout_path",
+    "created_at",
+    "updated_at",
+    "created_at_ms",
+    "updated_at_ms",
+    "archived_at",
+    "title",
+    "first_user_message",
+    "preview",
+    "cwd",
+}
+
+
+def meaningful(value: Any, *, nonempty: bool = False) -> bool:
+    if value is None:
+        return False
+    if nonempty and isinstance(value, str) and value == "":
+        return False
+    return True
+
+
+def wants_nonempty_metadata(key: str) -> bool:
+    return key in PREFERRED_NONEMPTY_METADATA_FIELDS
+
+
+def choose_template_rows(current: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    rows = list(current.values())
+
+    def score(row: dict[str, Any]) -> tuple[int, int, int]:
+        visible = int(row.get("archived") == 0 and row.get("source") == "vscode" and row.get("thread_source") == "user" and row.get("has_user_event") == 1)
+        complete = int(bool(row.get("sandbox_policy")) and bool(row.get("approval_mode")) and bool(row.get("model_provider")))
+        updated = int(row.get("updated_at_ms") or 0) or int(row.get("updated_at") or 0) * 1000
+        return (visible, complete, updated)
+
+    rows.sort(key=score, reverse=True)
+    by_provider: dict[str, dict[str, Any]] = {}
+    generic: dict[str, Any] | None = None
+    for row in rows:
+        provider = str(row.get("model_provider") or "")
+        if provider and provider not in by_provider and score(row)[1]:
+            by_provider[provider] = row
+        if generic is None and score(row)[1]:
+            generic = row
+    return by_provider, generic
+
+
+def enrich_insert_metadata(
+    desired: dict[str, Any],
+    columns: dict[str, dict[str, Any]],
+    provider_template: dict[str, Any] | None,
+    generic_template: dict[str, Any] | None,
+    info: RolloutInfo,
+    config_defaults: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str], list[str]]:
+    enriched = dict(desired)
+    sources: dict[str, str] = {}
+
+    rollout_values = {
+        "sandbox_policy": info.sandbox_policy,
+        "approval_mode": info.approval_mode,
+        "model": info.model,
+        "reasoning_effort": info.reasoning_effort,
+        "cli_version": info.cli_version,
+    }
+    for key, value in rollout_values.items():
+        if key in columns and meaningful(value, nonempty=wants_nonempty_metadata(key)):
+            if not meaningful(enriched.get(key), nonempty=wants_nonempty_metadata(key)):
+                enriched[key] = value
+                sources[key] = "rollout"
+
+    for template, label in ((provider_template, "same_provider_template"), (generic_template, "generic_template")):
+        if not template:
+            continue
+        for key, value in template.items():
+            if key not in columns or key in TEMPLATE_COPY_DENYLIST:
+                continue
+            if meaningful(enriched.get(key), nonempty=wants_nonempty_metadata(key)):
+                continue
+            if meaningful(value, nonempty=wants_nonempty_metadata(key)):
+                enriched[key] = value
+                sources.setdefault(key, label)
+
+    current_provider = str(config_defaults.get("model_provider") or "")
+    desired_provider = str(enriched.get("model_provider") or "")
+    if current_provider and desired_provider == current_provider:
+        for key in ("model", "reasoning_effort", "approval_mode"):
+            if key in columns and key in config_defaults and not meaningful(enriched.get(key), nonempty=wants_nonempty_metadata(key)):
+                enriched[key] = config_defaults[key]
+                sources.setdefault(key, "current_config_same_provider")
+
+    missing: list[str] = []
+    for key, col in columns.items():
+        if key in enriched and meaningful(enriched.get(key), nonempty=key in CRITICAL_NONEMPTY_INSERT_FIELDS):
+            continue
+        if key in CRITICAL_NONEMPTY_INSERT_FIELDS:
+            missing.append(key)
+            continue
+        if int(col.get("pk") or 0):
+            continue
+        if int(col.get("notnull") or 0) and col.get("dflt_value") is None:
+            missing.append(key)
+            continue
+        if int(col.get("notnull") or 0) and col.get("dflt_value") is not None:
+            try:
+                enriched[key] = parse_sqlite_default(col.get("dflt_value"))
+                sources.setdefault(key, "schema_default")
+            except KeyError:
+                missing.append(key)
+
+    return enriched, sources, sorted(set(missing))
 
 
 def infer_thread_id_from_rollout(path: Path) -> str | None:
@@ -506,6 +703,13 @@ def build_plan(profile: Profile) -> dict[str, Any]:
     records = projection_records(profile, report)
     current = read_current_threads(profile)
     config_model_provider = current_config_model_provider(profile)
+    config_defaults = current_config_defaults(profile)
+    conn = connect_state(profile, True)
+    try:
+        columns = table_column_info(conn, "threads")
+    finally:
+        conn.close()
+    templates_by_provider, generic_template = choose_template_rows(current)
     actions: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for record in records:
@@ -544,8 +748,8 @@ def build_plan(profile: Profile) -> dict[str, Any]:
             "model_provider": model_provider,
             "cwd": info.cwd or existing_or(existing, "cwd", str(profile.codex_home)),
             "title": title,
-            "sandbox_policy": existing_or(existing, "sandbox_policy", ""),
-            "approval_mode": existing_or(existing, "approval_mode", ""),
+            "sandbox_policy": existing_or_nonempty(existing, "sandbox_policy", info.sandbox_policy),
+            "approval_mode": existing_or_nonempty(existing, "approval_mode", info.approval_mode),
             "has_user_event": 1,
             "archived": 0,
             "created_at_ms": info.created_ms or info.updated_ms,
@@ -554,6 +758,49 @@ def build_plan(profile: Profile) -> dict[str, Any]:
             "first_user_message": info.first_user_message[:4000],
             "preview": info.first_user_message[:2000],
         }
+        metadata_sources: dict[str, str] = {
+            "model_provider": model_provider_source,
+        }
+        if "model" in columns and info.model:
+            desired["model"] = existing_or_nonempty(existing, "model", info.model)
+            metadata_sources["model"] = "existing_db_preserved" if existing and meaningful(existing.get("model"), nonempty=True) else "rollout"
+        if "reasoning_effort" in columns and info.reasoning_effort:
+            desired["reasoning_effort"] = existing_or_nonempty(existing, "reasoning_effort", info.reasoning_effort)
+            metadata_sources["reasoning_effort"] = "existing_db_preserved" if existing and meaningful(existing.get("reasoning_effort"), nonempty=True) else "rollout"
+        if "cli_version" in columns and info.cli_version:
+            desired["cli_version"] = existing_or_nonempty(existing, "cli_version", info.cli_version)
+            metadata_sources["cli_version"] = "existing_db_preserved" if existing and meaningful(existing.get("cli_version"), nonempty=True) else "rollout"
+        if not existing:
+            provider_template = templates_by_provider.get(model_provider)
+            desired, inserted_sources, missing = enrich_insert_metadata(
+                desired,
+                columns,
+                provider_template,
+                generic_template,
+                info,
+                config_defaults,
+            )
+            metadata_sources.update(inserted_sources)
+            if missing:
+                rejected.append(
+                    {
+                        "thread_id": thread_id,
+                        "title": title,
+                        "status": status,
+                        "reason": "insert_metadata_incomplete:" + ",".join(missing),
+                        "projection_origin": record_origin,
+                        "missing_metadata": missing,
+                        "rollout_metadata": {
+                            "model_provider": info.model_provider,
+                            "sandbox_policy": bool(info.sandbox_policy),
+                            "approval_mode": bool(info.approval_mode),
+                            "model": bool(info.model),
+                            "reasoning_effort": bool(info.reasoning_effort),
+                            "cli_version": bool(info.cli_version),
+                        },
+                    }
+                )
+                continue
         diffs = {}
         if existing:
             for key, value in desired.items():
@@ -581,13 +828,13 @@ def build_plan(profile: Profile) -> dict[str, Any]:
                     "assistant_messages": info.assistant_messages,
                 },
                 "metadata_sources": {
-                    "model_provider": model_provider_source,
+                    **metadata_sources,
                 },
             }
         )
     created_at = utc_iso()
     return {
-        "version": 1,
+        "version": "2.5",
         "created_at": created_at,
         "generated_at": created_at,
         "profile": str(profile.path),
@@ -597,13 +844,13 @@ def build_plan(profile: Profile) -> dict[str, Any]:
         "session_index": str(session_index(profile)),
         "plan_policy": {
             "model_provider": "preserve_historical_v2",
-            "runtime_fields": "do_not_project_current_config",
+            "runtime_fields": "complete_insert_metadata_v25",
         },
         "allowed_statuses": sorted(profile.allowed_statuses),
         "thread_metadata_policy": {
-            "sandbox_policy": "existing DB row > empty string placeholder for new rows",
-            "approval_mode": "existing DB row > empty string placeholder for new rows",
-            "reason": "Safe Sync does not decide runtime sandbox or approval behavior; Codex should use current config/runtime when the thread is opened.",
+            "sandbox_policy": "existing DB row > rollout turn_context > same-provider template > reject insert",
+            "approval_mode": "existing DB row > rollout turn_context > same-provider template > current config only for same provider > reject insert",
+            "reason": "Safe Sync must not create half-populated thread rows. Missing required insert metadata rejects the row instead of inserting placeholders.",
             "model_provider": "existing DB row is preserved; new rows use rollout session_meta.model_provider; current config/profile are only rare fallbacks when rollout metadata is missing",
             "current_config_model_provider": config_model_provider,
             "warning": "Safe Sync preserves historical model_provider for resume routing; do not rewrite old threads to the current provider to fix UI filtering.",
@@ -689,15 +936,15 @@ def qident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def strip_unc_prefix(value: str) -> str:
+    return value[4:] if value.startswith("\\\\?\\") else value
+
+
 INSERT_RUNTIME_DENYLIST = {
-    "model",
-    "reasoning_effort",
     "agent_path",
     "agent_nickname",
     "agent_role",
-    "memory_mode",
     "tokens_used",
-    "cli_version",
     "git_sha",
     "git_branch",
     "git_origin_url",
@@ -714,12 +961,122 @@ UPDATE_RUNTIME_DENYLIST = INSERT_RUNTIME_DENYLIST | {
 def backfill_required_insert_metadata(
     action: dict[str, Any],
     desired: dict[str, Any],
-    columns: set[str],
+    columns: dict[str, dict[str, Any]],
 ) -> None:
-    if "sandbox_policy" in columns:
-        desired["sandbox_policy"] = ""
-    if "approval_mode" in columns:
-        desired["approval_mode"] = ""
+    for key, col in columns.items():
+        if key in desired:
+            continue
+        if int(col.get("pk") or 0):
+            continue
+        if int(col.get("notnull") or 0) and col.get("dflt_value") is not None:
+            desired[key] = parse_sqlite_default(col.get("dflt_value"))
+
+
+def validate_insert_desired(desired: dict[str, Any], columns: dict[str, dict[str, Any]], thread_id: str) -> None:
+    missing: list[str] = []
+    for key, col in columns.items():
+        if key in desired and meaningful(desired.get(key), nonempty=key in CRITICAL_NONEMPTY_INSERT_FIELDS):
+            continue
+        if int(col.get("pk") or 0):
+            continue
+        if key in CRITICAL_NONEMPTY_INSERT_FIELDS:
+            missing.append(key)
+            continue
+        if int(col.get("notnull") or 0) and col.get("dflt_value") is None:
+            missing.append(key)
+    if missing:
+        raise RuntimeError(f"Refusing to insert incomplete thread {thread_id}: missing {missing}")
+
+
+def validate_touched_threads(
+    conn: sqlite3.Connection,
+    columns: dict[str, dict[str, Any]],
+    actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    checked = 0
+    failures: list[dict[str, Any]] = []
+    for action in actions:
+        if action.get("action") == "noop":
+            continue
+        thread_id = str(action.get("thread_id") or "")
+        row = conn.execute("SELECT * FROM threads WHERE id=?", (thread_id,)).fetchone()
+        if row is None:
+            failures.append({"thread_id": thread_id, "reason": "missing_after_write"})
+            continue
+        data = dict(row)
+        checked += 1
+        missing = []
+        for key, col in columns.items():
+            if int(col.get("pk") or 0):
+                continue
+            value = data.get(key)
+            if int(col.get("notnull") or 0) and value is None:
+                missing.append(key)
+            if key in CRITICAL_NONEMPTY_INSERT_FIELDS and not meaningful(value, nonempty=True):
+                missing.append(key)
+        if missing:
+            failures.append({"thread_id": thread_id, "reason": "missing_required_metadata", "fields": sorted(set(missing))})
+        rollout = str(data.get("rollout_path") or "")
+        if rollout and not Path(strip_unc_prefix(rollout)).exists():
+            failures.append({"thread_id": thread_id, "reason": "rollout_path_missing", "rollout_path": rollout})
+        desired_provider = str(action.get("desired", {}).get("model_provider") or "")
+        if desired_provider and str(data.get("model_provider") or "") != desired_provider:
+            failures.append(
+                {
+                    "thread_id": thread_id,
+                    "reason": "model_provider_changed",
+                    "expected": desired_provider,
+                    "actual": data.get("model_provider"),
+                }
+            )
+    if failures:
+        raise RuntimeError("Post-write thread metadata validation failed: " + json.dumps(failures[:5], ensure_ascii=False))
+    return {"checked_threads": checked, "failures": 0}
+
+
+def validate_session_index_alignment(profile: Profile) -> dict[str, Any]:
+    visible = set(read_current_threads(profile).keys())
+    # Match the same visible predicate used by rebuild_session_index.
+    conn = connect_state(profile, True)
+    try:
+        visible = {
+            str(row["id"])
+            for row in conn.execute(
+                """
+                SELECT id FROM threads
+                WHERE archived=0 AND source='vscode'
+                  AND thread_source='user' AND has_user_event=1
+                """
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    entries = []
+    parse_errors = 0
+    target = session_index(profile)
+    if target.exists():
+        for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                parse_errors += 1
+                continue
+            if isinstance(obj, dict) and obj.get("id"):
+                entries.append(str(obj["id"]))
+    index_ids = set(entries)
+    missing = sorted(visible - index_ids)
+    unknown = sorted(index_ids - visible)
+    if parse_errors or missing or unknown:
+        raise RuntimeError(
+            "session_index validation failed: "
+            + json.dumps(
+                {"parse_errors": parse_errors, "missing_visible_refs": missing[:10], "unknown_refs": unknown[:10]},
+                ensure_ascii=False,
+            )
+        )
+    return {"session_index_rows": len(entries), "parse_errors": 0, "missing_visible_refs": 0, "unknown_refs": 0}
 
 
 def apply_plan(profile: Profile, plan_path: Path) -> dict[str, Any]:
@@ -763,6 +1120,13 @@ def apply_plan(profile: Profile, plan_path: Path) -> dict[str, Any]:
                 if action["thread_id"] not in current:
                     raise RuntimeError(f"Planned update target disappeared: {action['thread_id']}")
                 updates = {key: value for key, value in desired.items() if key != "id" and key not in UPDATE_RUNTIME_DENYLIST}
+                current_row = current[action["thread_id"]]
+                for key in ("sandbox_policy", "approval_mode"):
+                    if key in desired and key in columns:
+                        before = current_row.get(key)
+                        after = desired.get(key)
+                        if not meaningful(before, nonempty=True) and meaningful(after, nonempty=True):
+                            updates[key] = after
                 if not updates:
                     applied["noop"] += 1
                     continue
@@ -1073,6 +1437,92 @@ def undo(profile: Profile, snapshot_path: Path | None) -> dict[str, Any]:
         shutil.copy2(global_state, global_state_path(profile))
         global_state_restored = True
     return {"restored_snapshot": str(snap), "integrity": db_integrity(profile), "global_state_restored": global_state_restored}
+
+
+def apply_plan(profile: Profile, plan_path: Path) -> dict[str, Any]:
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    policy = plan.get("plan_policy")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("model_provider") != "preserve_historical_v2"
+        or policy.get("runtime_fields") != "complete_insert_metadata_v25"
+    ):
+        raise RuntimeError("This Safe Sync plan was generated by an older policy. Regenerate the plan with V2.5 first.")
+    if Path(plan["state_db"]).resolve() != state_db(profile).resolve():
+        raise RuntimeError("Plan state_db does not match profile.")
+    if profile.require_integrity_ok and db_integrity(profile) != "ok":
+        raise RuntimeError("State DB integrity check is not ok.")
+    snap = snapshot(profile, "projection") if profile.snapshot_before_apply else None
+    if snap:
+        shutil.copy2(plan_path, snap / "applied-plan.json")
+    journal = local_dir() / "journal-current.json"
+    journal.write_text(
+        json.dumps({"started_at": utc_iso(), "plan": str(plan_path), "snapshot": str(snap) if snap else ""}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    conn = connect_state(profile, False)
+    applied = {"insert": 0, "update": 0, "noop": 0}
+    thread_validation: dict[str, Any] = {"checked_threads": 0, "failures": 0}
+    try:
+        column_info = table_column_info(conn, "threads")
+        columns = set(column_info)
+        current = {str(row["id"]): dict(row) for row in conn.execute("SELECT * FROM threads").fetchall()}
+        conn.execute("BEGIN IMMEDIATE")
+        for action in plan["actions"]:
+            kind = action["action"]
+            if kind == "noop":
+                applied["noop"] += 1
+                continue
+            desired = {key: value for key, value in action["desired"].items() if key in columns}
+            if kind == "insert":
+                backfill_required_insert_metadata(action, desired, column_info)
+                desired = {key: value for key, value in desired.items() if key not in INSERT_RUNTIME_DENYLIST}
+                validate_insert_desired(desired, column_info, str(action["thread_id"]))
+                keys = list(desired)
+                placeholders = ",".join("?" for _ in keys)
+                col_sql = ",".join(qident(key) for key in keys)
+                conn.execute(
+                    f"INSERT INTO threads ({col_sql}) VALUES ({placeholders})",
+                    [desired[key] for key in keys],
+                )
+            elif kind == "update":
+                if action["thread_id"] not in current:
+                    raise RuntimeError(f"Planned update target disappeared: {action['thread_id']}")
+                updates = {key: value for key, value in desired.items() if key != "id" and key not in UPDATE_RUNTIME_DENYLIST}
+                if not updates:
+                    applied["noop"] += 1
+                    continue
+                assignments = ",".join(f"{qident(key)}=?" for key in updates)
+                cursor = conn.execute(
+                    f"UPDATE threads SET {assignments} WHERE id=?",
+                    [*updates.values(), action["thread_id"]],
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(f"Planned update did not affect exactly one row: {action['thread_id']}")
+            else:
+                raise RuntimeError(f"Unsupported action kind: {kind}")
+            applied[kind] += 1
+        thread_validation = validate_touched_threads(conn, column_info, plan["actions"])
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    rebuild_session_index(profile)
+    index_validation = validate_session_index_alignment(profile)
+    if journal.exists():
+        journal.unlink()
+    return {
+        "snapshot": str(snap) if snap else "",
+        "applied": applied,
+        "active_threads": active_thread_count(profile),
+        "validation": {
+            "threads": thread_validation,
+            "session_index": index_validation,
+        },
+    }
 
 
 def command_doctor(args: argparse.Namespace) -> int:

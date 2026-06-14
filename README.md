@@ -1,4 +1,4 @@
-# Codex State Health Tool
+# Codex State Health Tool V2.5
 
 Safety-first local repair tools for Codex Desktop state, left-sidebar visibility,
 and provider-switching display issues.
@@ -14,6 +14,7 @@ settings, or rollout content.
 - Detects common Codex local-state failures with a six-category Doctor.
 - Rebuilds the left-sidebar local index from valid rollout files when the index
   is missing entries.
+- Automatically decides whether Safe Sync is needed after provider switching.
 - Preserves `threads.model_provider` as historical thread metadata.
 - Patches Codex Desktop display filtering from `modelProviders:null` to
   `modelProviders:[]  ` so the sidebar can show conversations from all
@@ -40,6 +41,10 @@ Default Safe Sync does not write:
 - rollout JSONL content
 - `.codex-global-state.json`
 
+Safe Sync V2.5 refuses to insert half-populated thread rows. New inserts must
+have complete required metadata from rollout `session_meta` / `turn_context`,
+same-provider templates, schema defaults, or the row is rejected.
+
 Provider Display Patch edits only the Codex Desktop application package or a
 separate copied Desktop package. It does not edit `.codex` data.
 
@@ -65,8 +70,8 @@ Windows CMD and elevated Administrator consoles.
 
 Simple menu entries:
 
-- `1. Provider switch repair`
-- `2. Safe Sync left-sidebar index`
+- `1. Provider switch auto repair`
+- `2. Manual Safe Sync index rebuild`
 - `3. Doctor status`
 - `4. Launch patched Desktop copy`
 - `5. Advanced menu`
@@ -77,15 +82,15 @@ After changing provider/API in CC Switch or `config.toml`:
 
 1. Close Codex.
 2. Run `RUN_SQLSwitchCodex.cmd`.
-3. Choose `1. Provider switch repair`.
+3. Choose `1. Provider switch auto repair`.
 4. If the official `WindowsApps` package cannot be patched, the tool creates or
    updates a local patched Desktop copy automatically.
-5. Launch the patched copy from option `4` when needed.
+5. The tool automatically checks whether Safe Sync is needed.
+6. Launch the patched copy from option `4` when needed.
 
-Use `2. Safe Sync left-sidebar index` only when Doctor says the local database
-or `session_index.jsonl` is missing valid rollout-backed conversations. Safe
-Sync is not required for ordinary provider switching once the display patch is
-working.
+Use `2. Manual Safe Sync index rebuild` only as an advanced/manual path. Option
+`1` already detects `missing_db` / `missing_index` and prompts for Safe Sync only
+when the local index is incomplete.
 
 ## Why Provider Display Patch Exists
 

@@ -493,7 +493,7 @@ def create_backup(codex_home: Path, label: str) -> Path:
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "label": label,
         "codex_home": str(codex_home),
-        "note": "V2.4 backup before left navigation sync. Restore manually or use .local snapshots.",
+        "note": "V2.5 backup before left navigation sync. Restore manually or use .local snapshots.",
         "files": {path.name: sha256_file(path) for path in copied if path.exists()},
     }
     (backup_dir / "backup-manifest.json").write_text(
@@ -642,6 +642,96 @@ def provider_visibility_summary(codex_home: Path) -> dict[str, object]:
     summary["visible_all_providers"] = sum(counts.values())
     summary["visible_current_provider"] = counts.get(str(current), 0) if current else 0
     return summary
+
+
+def read_persistent_env(name: str, scope: str) -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+
+        if scope == "User":
+            root = winreg.HKEY_CURRENT_USER
+            subkey = "Environment"
+        elif scope == "Machine":
+            root = winreg.HKEY_LOCAL_MACHINE
+            subkey = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+        else:
+            return ""
+        with winreg.OpenKey(root, subkey, 0, winreg.KEY_READ) as key:
+            value, _kind = winreg.QueryValueEx(key, name)
+        return str(value or "")
+    except Exception:
+        return ""
+
+
+def auth_env_status(codex_home: Path | None) -> dict[str, object]:
+    provider = current_config_model_provider(codex_home) if codex_home else None
+    auth_path = codex_home / "auth.json" if codex_home else None
+    auth_exists = bool(auth_path and auth_path.exists())
+    auth_has_key = False
+    auth_parse_error = ""
+    if auth_path and auth_path.exists():
+        try:
+            data = json.loads(auth_path.read_text(encoding="utf-8", errors="replace"))
+            auth_has_key = isinstance(data, dict) and bool(data.get("OPENAI_API_KEY"))
+        except Exception as exc:
+            auth_parse_error = f"{type(exc).__name__}: {exc}"
+    process_has_key = bool(os.environ.get("OPENAI_API_KEY"))
+    user_has_key = bool(read_persistent_env("OPENAI_API_KEY", "User"))
+    machine_has_key = bool(read_persistent_env("OPENAI_API_KEY", "Machine"))
+    third_party = bool(provider and provider != "openai")
+    return {
+        "current_provider": provider or "",
+        "third_party_mode": third_party,
+        "auth_json": str(auth_path) if auth_path else "",
+        "auth_json_exists": auth_exists,
+        "auth_has_openai_api_key": auth_has_key,
+        "auth_parse_error": auth_parse_error,
+        "process_env_has_openai_api_key": process_has_key,
+        "user_env_has_openai_api_key": user_has_key,
+        "machine_env_has_openai_api_key": machine_has_key,
+        "conflict": third_party and (auth_has_key or process_has_key or user_has_key or machine_has_key),
+    }
+
+
+def print_auth_env_status_en(status: dict[str, object]) -> None:
+    print("Provider Auth/Env Status")
+    hr()
+    print(f"Current provider : {status.get('current_provider') or '(unknown)'}")
+    print(f"auth.json exists : {'yes' if status.get('auth_json_exists') else 'no'}")
+    print(f"auth has key     : {'yes' if status.get('auth_has_openai_api_key') else 'no'}")
+    print(f"Process env key  : {'yes' if status.get('process_env_has_openai_api_key') else 'no'}")
+    print(f"User env key     : {'yes' if status.get('user_env_has_openai_api_key') else 'no'}")
+    print(f"Machine env key  : {'yes' if status.get('machine_env_has_openai_api_key') else 'no'}")
+    if status.get("auth_parse_error"):
+        print(f"auth parse       : {status.get('auth_parse_error')}")
+    if status.get("conflict"):
+        print("Conflict         : yes - third-party provider mode has OpenAI auth/env residue.")
+    else:
+        print("Conflict         : no")
+
+
+def safe_sync_needed_from_report(report: dict[str, object]) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return False, reasons
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        detail = str(check.get("detail") or "")
+        item = str(check.get("item") or "")
+        status = str(check.get("status") or "")
+        if status == "PASS":
+            continue
+        for key in ("missing_db", "missing_index", "parse_errors", "missing_visible_refs"):
+            match = re.search(rf"{key}=([0-9]+)", detail)
+            if match and int(match.group(1)) > 0:
+                reasons.append(f"{item}: {key}={match.group(1)}")
+        if "session_index.jsonl" in item and status in {"WARN", "APP_ERROR", "FATAL"}:
+            reasons.append(f"{item}: {detail}")
+    return bool(reasons), reasons
 
 
 def create_app_file_backup(path: Path, label: str) -> Path:
@@ -1304,7 +1394,7 @@ def write_sidebar_registry_plan(codex_home: Path) -> Path:
     current_path = codex_home / ".codex-global-state.json"
     desired_keys = {key: desired.get(key) for key in SIDEBAR_UI_KEYS}
     plan = {
-        "version": "SQLSwitchCodex V2.4 sidebar-ui-plan",
+        "version": "SQLSwitchCodex V2.5 sidebar-ui-plan",
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "codex_home": str(codex_home),
         "global_state": str(current_path),
@@ -2078,6 +2168,15 @@ def doctor_sandbox_runtime(report: dict[str, object], codex_home: Path) -> None:
             f"命中 {len(provider_hits)} 个日志文件",
             {"hits": provider_hits},
         )
+    auth_status = auth_env_status(codex_home)
+    add_check(
+        report,
+        category,
+        "PROVIDER" if auth_status.get("conflict") else "PASS",
+        "provider auth/env conflict",
+        "third-party provider mode has OpenAI auth/env residue" if auth_status.get("conflict") else "no conflict",
+        auth_status,
+    )
     ace_failures = sandbox_write_ace_failures(codex_home) if os.name == "nt" else {}
     unresolved_ace_failures = [
         item for item in ace_failures.values()
@@ -2149,7 +2248,7 @@ def doctor_environment(report: dict[str, object], codex_home: Path) -> None:
 def build_doctor_report() -> dict[str, object]:
     codex_home = load_profile_codex_home()
     report: dict[str, object] = {
-        "version": "SQLSwitchCodex V2.4 doctor-6",
+        "version": "SQLSwitchCodex V2.5 doctor-6",
         "created_at": dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z"),
         "tool_root": str(ROOT),
         "profile": str(DEFAULT_PROFILE),
@@ -2273,7 +2372,7 @@ def status_summary() -> None:
 
 
 def show_guide() -> None:
-    print("SQLSwitchCodex V2.4 指南")
+    print("SQLSwitchCodex V2.5 指南")
     hr()
     print("这个工具以 Python 为主，cmd 只负责启动。日常菜单不调用 ps1。")
     print()
@@ -3357,6 +3456,22 @@ def provider_switch_repair_en() -> None:
     report = build_doctor_report()
     report_path = write_tool_report("doctor", report)
     print_doctor_brief_en(report, report_path)
+    sync_needed, sync_reasons = safe_sync_needed_from_report(report)
+    auth_status = auth_env_status(codex_home)
+    print()
+    print_auth_env_status_en(auth_status)
+    print()
+    if sync_needed:
+        print("Safe Sync need  : yes")
+        for reason in sync_reasons[:8]:
+            print(f"  - {reason}")
+    else:
+        print("Safe Sync need  : no - local DB and session_index are already aligned.")
+    if auth_status.get("conflict"):
+        print()
+        print("Auth warning    : current provider is third-party/custom but OpenAI auth/env residue exists.")
+        print("                 This can cause invalid_api_key when opening historical OpenAI-provider threads.")
+        print("                 V2.5 only warns; it does not inject or delete API keys automatically.")
     if str(report.get("overall_status")) in {"APP_ERROR", "FATAL"}:
         print()
         print("Doctor found an app/database-level error. Provider switch repair is not the right first step.")
@@ -3404,7 +3519,11 @@ def provider_switch_repair_en() -> None:
     if official_fixed:
         print()
         print("Provider display repair is ready in the official Desktop package.")
-        print("Open Codex normally. If the sidebar is still wrong, run option 2 Safe Sync.")
+        if sync_needed:
+            print("Safe Sync is also needed for missing local index entries.")
+            safe_sync_repair_flow_en()
+        else:
+            print("Safe Sync was not needed. Open Codex normally.")
         return
 
     print()
@@ -3429,6 +3548,13 @@ def provider_switch_repair_en() -> None:
         launch_patched_desktop_copy_en()
     else:
         print("Repair complete. Use option 4 later to launch the patched Desktop copy.")
+    if sync_needed:
+        print()
+        print("Doctor also found missing local index entries.")
+        safe_sync_repair_flow_en()
+    else:
+        print()
+        print("Safe Sync was not needed, so V2.5 skipped it.")
 
 
 def safe_sync_repair_flow_en() -> None:
@@ -3448,19 +3574,19 @@ def safe_sync_repair_flow_en() -> None:
 def simple_menu() -> int:
     while True:
         clear()
-        print("Codex State Health Tool - Simple Admin Menu")
+        print("Codex State Health Tool V2.5 - Simple Admin Menu")
         hr()
         print("Daily provider-switch flow:")
         print("  Change provider/API first, close Codex, then run option 1.")
         print()
         print("Safe boundary:")
-        print("  Option 1 fixes Desktop display filtering or patched Desktop copy.")
-        print("  Option 2 writes only state_5.sqlite and session_index.jsonl when the local index is incomplete.")
+        print("  Option 1 fixes provider display and auto-detects whether Safe Sync is needed.")
+        print("  Option 2 is manual index rebuild for Doctor-confirmed missing entries.")
         print("  No option rewrites auth, provider config, model, sandbox, or rollout content by default.")
         print(f"Tool path: {ROOT}")
         print()
-        print("  1. Provider switch repair        [recommended after changing API/provider]")
-        print("  2. Safe Sync left-sidebar index  [only if Doctor says entries are missing]")
+        print("  1. Provider switch auto repair   [recommended after changing API/provider]")
+        print("  2. Manual Safe Sync index rebuild [advanced]")
         print("  3. Doctor status                 [read-only]")
         print("  4. Launch patched Desktop copy")
         print("  5. Advanced menu")
@@ -3496,7 +3622,7 @@ def simple_menu() -> int:
 def english_menu() -> int:
     while True:
         clear()
-        print("SQLSwitchCodex V2.4 - English Safe Menu")
+        print("SQLSwitchCodex V2.5 - English Safe Menu")
         hr()
         print("Goal: restore Codex Desktop left sidebar visibility after provider switching.")
         print("Main fix: make Desktop request all providers by changing modelProviders:null to modelProviders:[]  .")
@@ -3546,7 +3672,7 @@ def english_menu() -> int:
 def menu() -> int:
     while True:
         clear()
-        print("SQLSwitchCodex V2.4 - 左侧导航安全修复")
+        print("SQLSwitchCodex V2.5 - 左侧导航安全修复")
         hr()
         print("目标：日常两步修复左侧会话和 provider 显示；必要时再修 Project/Chats。")
         print("边界：默认不碰 global-state / 沙箱 / provider / auth / 模型 / rollout 正文。")
